@@ -1,0 +1,19 @@
+spring:
+  application:
+    name: weatherbot
+
+server:
+  port: 8080
+
+weatherbot:
+  open-meteo:
+    geocoding-url: https://geocoding-api.open-meteo.com
+    forecast-url: https://api.open-meteo.com
+    connect-timeout: 3s
+    read-timeout: 5s
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
