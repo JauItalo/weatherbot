@@ -16,7 +16,7 @@ import com.seunome.weatherbot.dto.ErrorResponse;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolationException;
 
-@RestControllerAdvice
+@RestControllerAdvice(basePackages = "com.seunome.weatherbot.controller")
 public class GlobalExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
