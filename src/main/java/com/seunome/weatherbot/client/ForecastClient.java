@@ -1,15 +1,21 @@
 package com.seunome.weatherbot.client;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 
+import com.seunome.weatherbot.config.CacheConfig;
 import com.seunome.weatherbot.dto.ForecastResponse;
 import com.seunome.weatherbot.exception.WeatherApiUnavailableException;
 
 @Component
 public class ForecastClient {
+
+    private static final Logger log = LoggerFactory.getLogger(ForecastClient.class);
 
     private static final String CURRENT_FIELDS =
             "temperature_2m,relative_humidity_2m,apparent_temperature,"
@@ -25,7 +31,11 @@ public class ForecastClient {
         this.restClient = restClient;
     }
 
+    @Cacheable(
+            cacheNames = CacheConfig.FORECAST_CACHE,
+            key = "#latitude + ',' + #longitude")
     public ForecastResponse getForecast(double latitude, double longitude) {
+        log.info("Consultando previsão na Open-Meteo: {}, {}", latitude, longitude);
         try {
             ForecastResponse response = restClient.get()
                     .uri(uri -> uri.path("/v1/forecast")

@@ -12,6 +12,9 @@ weatherbot:
     connect-timeout: 3s
     read-timeout: 5s
 
+  cache:
+    geocoding-ttl: 24h
+    forecast-ttl: 10m
 management:
   endpoints:
     web:
