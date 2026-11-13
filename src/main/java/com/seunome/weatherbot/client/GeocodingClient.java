@@ -25,7 +25,7 @@ public class GeocodingClient {
             GeocodingResponse response = restClient.get()
                     .uri(uri -> uri.path("/v1/search")
                             .queryParam("name", "{name}")
-                            .queryParam("count", 5)
+                            .queryParam("count", 10)
                             .queryParam("language", "pt")
                             .queryParam("format", "json")
                             .build(cityName))
