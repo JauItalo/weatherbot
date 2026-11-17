@@ -9,6 +9,7 @@ import java.util.Set;
 import org.springframework.stereotype.Service;
 
 import com.seunome.weatherbot.client.GeocodingClient;
+import com.seunome.weatherbot.dto.ChatOption;
 import com.seunome.weatherbot.dto.ChatResponse;
 import com.seunome.weatherbot.dto.ChatResponseType;
 import com.seunome.weatherbot.dto.GeocodingResult;
@@ -55,7 +56,7 @@ public class ChatService {
 
         // Vazio, "Oi", "Oi!" ou "Oi, tudo bem?": o trecho antes da vírgula é uma saudação.
         if (message.isEmpty() || isGreeting(city)) {
-            return new ChatResponse(ChatResponseType.WELCOME, WeatherMessageFormatter.WELCOME, null);
+            return new ChatResponse(ChatResponseType.WELCOME, WeatherMessageFormatter.WELCOME, null, null);
         }
 
         List<GeocodingResult> results = geocodingClient.searchCity(city);
@@ -65,7 +66,7 @@ public class ChatService {
         }
 
         if (results.isEmpty()) {
-            return new ChatResponse(ChatResponseType.NOT_FOUND, formatter.formatNotFound(message), null);
+            return new ChatResponse(ChatResponseType.NOT_FOUND, formatter.formatNotFound(message), null, null);
         }
 
         Optional<GeocodingResult> chosen = pickCity(results);
@@ -78,11 +79,12 @@ public class ChatService {
             return new ChatResponse(
                     ChatResponseType.DISAMBIGUATION,
                     formatter.formatDisambiguation(city, options),
-                    null);
+                    null,
+                    toChatOptions(city, options));
         }
 
         WeatherResponse weather = weatherService.getWeatherByLocation(chosen.get());
-        return new ChatResponse(ChatResponseType.WEATHER, formatter.formatWeather(weather), weather);
+        return new ChatResponse(ChatResponseType.WEATHER, formatter.formatWeather(weather), weather, null);
     }
 
     /**
@@ -104,6 +106,28 @@ public class ChatService {
         // top >= second * 5, sem multiplicação (inteiros: equivale a top / 5 >= second)
         boolean dominant = top > 0 && top / DOMINANCE_FACTOR >= second;
         return dominant ? Optional.of(byPopulation.get(0)) : Optional.empty();
+    }
+
+    /**
+     * Botões da desambiguação. A consulta reenviada é "cidade, estado" (ou "cidade, país" quando a
+     * API não informa o estado), que o filtro do próprio chat já entende.
+     */
+    private List<ChatOption> toChatOptions(String city, List<GeocodingResult> options) {
+        return options.stream()
+                .map(r -> new ChatOption(
+                        joinNonBlank(r.name(), r.admin1(), r.country()),
+                        city + ", " + (isBlank(r.admin1()) ? r.countryCode() : r.admin1())))
+                .toList();
+    }
+
+    private static boolean isBlank(String s) {
+        return s == null || s.isBlank();
+    }
+
+    private static String joinNonBlank(String... parts) {
+        return java.util.Arrays.stream(parts)
+                .filter(p -> !isBlank(p))
+                .collect(java.util.stream.Collectors.joining(", "));
     }
 
     private boolean isGreeting(String text) {

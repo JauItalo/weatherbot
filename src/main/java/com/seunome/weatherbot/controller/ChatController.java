@@ -28,7 +28,7 @@ public class ChatController {
     @Operation(summary = "Mensagem de boas-vindas")
     @GetMapping("/welcome")
     public ChatResponse welcome() {
-        return new ChatResponse(ChatResponseType.WELCOME, WeatherMessageFormatter.WELCOME, null);
+        return new ChatResponse(ChatResponseType.WELCOME, WeatherMessageFormatter.WELCOME, null, null);
     }
 
     @Operation(

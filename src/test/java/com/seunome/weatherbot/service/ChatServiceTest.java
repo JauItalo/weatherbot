@@ -191,6 +191,20 @@ class ChatServiceTest {
     }
 
     @Test
+    void desambiguacaoDeveOferecerOpcoesClicaveis() {
+        GeocodingResult a = cidade(1L, "Santa Cruz", "Rio Grande do Norte", "Brasil", "BR", 40_000L);
+        GeocodingResult b = cidade(2L, "Santa Cruz", "Santa Cruz", "Bolívia", "BO", 35_000L);
+        when(geocodingClient.searchCity("Santa Cruz")).thenReturn(List.of(a, b));
+
+        ChatResponse r = chatService.handle("Santa Cruz");
+
+        assertEquals(2, r.options().size());
+        assertEquals("Santa Cruz, Rio Grande do Norte, Brasil", r.options().get(0).label());
+        assertEquals("Santa Cruz, Rio Grande do Norte", r.options().get(0).query());
+        assertEquals("Santa Cruz, Santa Cruz", r.options().get(1).query());
+    }
+
+    @Test
     void semDadosDePopulacaoDeveGerarDesambiguacao() {
         GeocodingResult a = cidade(1L, "Vila Nova", "A", "Brasil", "BR", null);
         GeocodingResult b = cidade(2L, "Vila Nova", "B", "Portugal", "PT", null);
