@@ -3,25 +3,36 @@ package com.seunome.weatherbot;
 import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
 import static com.github.tomakehurst.wiremock.client.WireMock.equalTo;
 import static com.github.tomakehurst.wiremock.client.WireMock.get;
+import static com.github.tomakehurst.wiremock.client.WireMock.getRequestedFor;
 import static com.github.tomakehurst.wiremock.client.WireMock.urlPathEqualTo;
 import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.wireMockConfig;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.time.Duration;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
+import org.springframework.web.client.RestClient;
+
 import com.github.tomakehurst.wiremock.junit5.WireMockExtension;
 import com.seunome.weatherbot.client.ForecastClient;
 import com.seunome.weatherbot.client.GeocodingClient;
+import com.seunome.weatherbot.client.ResilientExecutor;
+import com.seunome.weatherbot.config.ResilienceConfig;
 import com.seunome.weatherbot.dto.ChatResponse;
 import com.seunome.weatherbot.dto.ChatResponseType;
 import com.seunome.weatherbot.exception.WeatherApiUnavailableException;
 import com.seunome.weatherbot.formatter.WeatherMessageFormatter;
 import com.seunome.weatherbot.service.ChatService;
 import com.seunome.weatherbot.service.WeatherService;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.RegisterExtension;
-import org.springframework.web.client.RestClient;
+
+import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
+import io.github.resilience4j.retry.RetryConfig;
+import io.github.resilience4j.retry.RetryRegistry;
 
 class WeatherBotIntegrationTest {
 
@@ -38,8 +49,18 @@ class WeatherBotIntegrationTest {
                 .baseUrl(wireMock.baseUrl())
                 .build();
 
-        GeocodingClient geocodingClient = new GeocodingClient(restClient);
-        ForecastClient forecastClient = new ForecastClient(restClient);
+        ResilientExecutor executor = new ResilientExecutor(
+                CircuitBreakerRegistry.of(CircuitBreakerConfig.custom()
+                        .recordException(ResilienceConfig::isTransient)
+                        .build()),
+                RetryRegistry.of(RetryConfig.custom()
+                        .maxAttempts(3)
+                        .waitDuration(Duration.ofMillis(10))
+                        .retryOnException(ResilienceConfig::isTransient)
+                        .build()));
+
+        GeocodingClient geocodingClient = new GeocodingClient(restClient, executor);
+        ForecastClient forecastClient = new ForecastClient(restClient, executor);
         WeatherService weatherService = new WeatherService(geocodingClient, forecastClient);
 
         chatService = new ChatService(geocodingClient, weatherService, new WeatherMessageFormatter());
@@ -103,6 +124,8 @@ class WeatherBotIntegrationTest {
                 .willReturn(aResponse().withStatus(500)));
 
         assertThrows(WeatherApiUnavailableException.class, () -> chatService.handle("Lisboa"));
+
+        wireMock.verify(3, getRequestedFor(urlPathEqualTo("/v1/forecast")));
     }
 
     // ---------- stubs ----------

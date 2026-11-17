@@ -26,9 +26,12 @@ public class ForecastClient {
             + "precipitation_probability_max,sunrise,sunset";
 
     private final RestClient restClient;
+    private final ResilientExecutor resilientExecutor;
 
-    public ForecastClient(@Qualifier("forecastRestClient") RestClient restClient) {
+    public ForecastClient(@Qualifier("forecastRestClient") RestClient restClient,
+                          ResilientExecutor resilientExecutor) {
         this.restClient = restClient;
+        this.resilientExecutor = resilientExecutor;
     }
 
     @Cacheable(
@@ -37,17 +40,18 @@ public class ForecastClient {
     public ForecastResponse getForecast(double latitude, double longitude) {
         log.info("Consultando previsão na Open-Meteo: {}, {}", latitude, longitude);
         try {
-            ForecastResponse response = restClient.get()
-                    .uri(uri -> uri.path("/v1/forecast")
-                            .queryParam("latitude", latitude)
-                            .queryParam("longitude", longitude)
-                            .queryParam("current", CURRENT_FIELDS)
-                            .queryParam("daily", DAILY_FIELDS)
-                            .queryParam("timezone", "auto")
-                            .queryParam("forecast_days", 7)
-                            .build())
-                    .retrieve()
-                    .body(ForecastResponse.class);
+            ForecastResponse response = resilientExecutor.execute("forecast", () ->
+                    restClient.get()
+                            .uri(uri -> uri.path("/v1/forecast")
+                                    .queryParam("latitude", latitude)
+                                    .queryParam("longitude", longitude)
+                                    .queryParam("current", CURRENT_FIELDS)
+                                    .queryParam("daily", DAILY_FIELDS)
+                                    .queryParam("timezone", "auto")
+                                    .queryParam("forecast_days", 7)
+                                    .build())
+                            .retrieve()
+                            .body(ForecastResponse.class));
 
             if (response == null || response.current() == null || response.daily() == null) {
                 throw new WeatherApiUnavailableException(

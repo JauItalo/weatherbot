@@ -21,9 +21,12 @@ public class GeocodingClient {
     private static final Logger log = LoggerFactory.getLogger(GeocodingClient.class);
 
     private final RestClient restClient;
+    private final ResilientExecutor resilientExecutor;
 
-    public GeocodingClient(@Qualifier("geocodingRestClient") RestClient restClient) {
+    public GeocodingClient(@Qualifier("geocodingRestClient") RestClient restClient,
+                           ResilientExecutor resilientExecutor) {
         this.restClient = restClient;
+        this.resilientExecutor = resilientExecutor;
     }
 
     @Cacheable(
@@ -33,15 +36,16 @@ public class GeocodingClient {
     public List<GeocodingResult> searchCity(String cityName) {
         log.info("Consultando geocoding na Open-Meteo: {}", cityName);
         try {
-            GeocodingResponse response = restClient.get()
-                    .uri(uri -> uri.path("/v1/search")
-                            .queryParam("name", "{name}")
-                            .queryParam("count", 10)
-                            .queryParam("language", "pt")
-                            .queryParam("format", "json")
-                            .build(cityName))
-                    .retrieve()
-                    .body(GeocodingResponse.class);
+            GeocodingResponse response = resilientExecutor.execute("geocoding", () ->
+                    restClient.get()
+                            .uri(uri -> uri.path("/v1/search")
+                                    .queryParam("name", "{name}")
+                                    .queryParam("count", 10)
+                                    .queryParam("language", "pt")
+                                    .queryParam("format", "json")
+                                    .build(cityName))
+                            .retrieve()
+                            .body(GeocodingResponse.class));
 
             if (response == null || response.results() == null) {
                 return List.of();
