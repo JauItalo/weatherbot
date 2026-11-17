@@ -16,6 +16,11 @@ RUN mvn -B -q package -DskipTests
 FROM eclipse-temurin:${JAVA_VERSION}-jre
 WORKDIR /app
 
+# curl é usado pelo healthcheck do docker-compose
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
 # Usuário sem privilégios (não rodar como root)
 RUN useradd --system --create-home appuser
 USER appuser

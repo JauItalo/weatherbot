@@ -1,0 +1,459 @@
+diff --git a/Dockerfile b/Dockerfile
+index bd929a8..a41ebca 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -16,6 +16,11 @@ RUN mvn -B -q package -DskipTests
+ FROM eclipse-temurin:${JAVA_VERSION}-jre
+ WORKDIR /app
+ 
++# curl é usado pelo healthcheck do docker-compose
++RUN apt-get update \
++    && apt-get install -y --no-install-recommends curl \
++    && rm -rf /var/lib/apt/lists/*
++
+ # Usuário sem privilégios (não rodar como root)
+ RUN useradd --system --create-home appuser
+ USER appuser
+diff --git a/src/main/java/com/seunome/weatherbot/client/GeocodingClient.java b/src/main/java/com/seunome/weatherbot/client/GeocodingClient.java
+index ccf240a..32075be 100644
+--- a/src/main/java/com/seunome/weatherbot/client/GeocodingClient.java
++++ b/src/main/java/com/seunome/weatherbot/client/GeocodingClient.java
+@@ -40,7 +40,7 @@ public class GeocodingClient {
+                     restClient.get()
+                             .uri(uri -> uri.path("/v1/search")
+                                     .queryParam("name", "{name}")
+-                                    .queryParam("count", 10)
++                                    .queryParam("count", 50)
+                                     .queryParam("language", "pt")
+                                     .queryParam("format", "json")
+                                     .build(cityName))
+diff --git a/src/main/java/com/seunome/weatherbot/controller/ChatController.java b/src/main/java/com/seunome/weatherbot/controller/ChatController.java
+index 5f570cf..0c8bb56 100644
+--- a/src/main/java/com/seunome/weatherbot/controller/ChatController.java
++++ b/src/main/java/com/seunome/weatherbot/controller/ChatController.java
+@@ -7,6 +7,7 @@ import com.seunome.weatherbot.formatter.WeatherMessageFormatter;
+ import com.seunome.weatherbot.service.ChatService;
+ import io.swagger.v3.oas.annotations.Operation;
+ import io.swagger.v3.oas.annotations.tags.Tag;
++import jakarta.validation.Valid;
+ import org.springframework.web.bind.annotation.GetMapping;
+ import org.springframework.web.bind.annotation.PostMapping;
+ import org.springframework.web.bind.annotation.RequestBody;
+@@ -36,7 +37,7 @@ public class ChatController {
+                     + "para resolver cidades homônimas. O campo 'type' indica o tipo de resposta: "
+                     + "WELCOME, WEATHER, DISAMBIGUATION ou NOT_FOUND.")
+     @PostMapping
+-    public ChatResponse chat(@RequestBody ChatRequest request) {
++    public ChatResponse chat(@Valid @RequestBody ChatRequest request) {
+         return chatService.handle(request.message());
+     }
+ }
+\ No newline at end of file
+diff --git a/src/main/java/com/seunome/weatherbot/dto/ChatRequest.java b/src/main/java/com/seunome/weatherbot/dto/ChatRequest.java
+index 736eaa7..ae8731d 100644
+--- a/src/main/java/com/seunome/weatherbot/dto/ChatRequest.java
++++ b/src/main/java/com/seunome/weatherbot/dto/ChatRequest.java
+@@ -1,8 +1,11 @@
+ package com.seunome.weatherbot.dto;
+ 
+ import io.swagger.v3.oas.annotations.media.Schema;
++import jakarta.validation.constraints.Size;
+ 
+ public record ChatRequest(
+-        @Schema(description = "Mensagem do usuário",
+-                example = "Santa Cruz, Rio Grande do Norte")
+-        String message) {}
+\ No newline at end of file
++        @Size(max = 150, message = "A mensagem deve ter no máximo 150 caracteres.")
++        @Schema(description = "Mensagem do usuário (vazia retorna as boas-vindas)",
++                example = "Santa Cruz, Rio Grande do Norte",
++                maxLength = 150)
++        String message) {}
+diff --git a/src/main/java/com/seunome/weatherbot/exception/GlobalExceptionHandler.java b/src/main/java/com/seunome/weatherbot/exception/GlobalExceptionHandler.java
+index f19bc78..467dc1d 100644
+--- a/src/main/java/com/seunome/weatherbot/exception/GlobalExceptionHandler.java
++++ b/src/main/java/com/seunome/weatherbot/exception/GlobalExceptionHandler.java
+@@ -6,6 +6,8 @@ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ import org.springframework.http.HttpStatus;
+ import org.springframework.http.ResponseEntity;
++import org.springframework.http.converter.HttpMessageNotReadableException;
++import org.springframework.web.bind.MethodArgumentNotValidException;
+ import org.springframework.web.bind.MissingServletRequestParameterException;
+ import org.springframework.web.bind.annotation.ExceptionHandler;
+ import org.springframework.web.bind.annotation.RestControllerAdvice;
+@@ -47,7 +49,25 @@ public class GlobalExceptionHandler {
+     public ResponseEntity<ErrorResponse> handleValidation(
+             Exception ex, HttpServletRequest request) {
+         return build(HttpStatus.BAD_REQUEST,
+-                "Informe o nome de uma cidade (entre 2 e 100 caracteres).", request);
++                "Parâmetro inválido. Informe o nome de uma cidade com 2 a 100 caracteres.", request);
++    }
++
++    /** Falha de @Valid no corpo da requisição (ex.: ChatRequest). Usa a mensagem do próprio campo. */
++    @ExceptionHandler(MethodArgumentNotValidException.class)
++    public ResponseEntity<ErrorResponse> handleBodyValidation(
++            MethodArgumentNotValidException ex, HttpServletRequest request) {
++        String message = ex.getBindingResult().getFieldErrors().stream()
++                .map(e -> e.getDefaultMessage())
++                .findFirst()
++                .orElse("Requisição inválida.");
++        return build(HttpStatus.BAD_REQUEST, message, request);
++    }
++
++    @ExceptionHandler(HttpMessageNotReadableException.class)
++    public ResponseEntity<ErrorResponse> handleUnreadableBody(
++            HttpMessageNotReadableException ex, HttpServletRequest request) {
++        return build(HttpStatus.BAD_REQUEST,
++                "Corpo da requisição inválido. Envie um JSON no formato {\"message\": \"...\"}.", request);
+     }
+ 
+     @ExceptionHandler(Exception.class)
+diff --git a/src/main/java/com/seunome/weatherbot/mapper/BrazilianStates.java b/src/main/java/com/seunome/weatherbot/mapper/BrazilianStates.java
+new file mode 100644
+index 0000000..aa3b1db
+--- /dev/null
++++ b/src/main/java/com/seunome/weatherbot/mapper/BrazilianStates.java
+@@ -0,0 +1,47 @@
++package com.seunome.weatherbot.mapper;
++
++import java.util.Locale;
++import java.util.Map;
++import java.util.Optional;
++
++/** Converte a sigla de um estado brasileiro (ex.: "PB") no nome por extenso ("Paraíba"). */
++public final class BrazilianStates {
++
++    private static final Map<String, String> UF_TO_NAME = Map.ofEntries(
++            Map.entry("AC", "Acre"),
++            Map.entry("AL", "Alagoas"),
++            Map.entry("AP", "Amapá"),
++            Map.entry("AM", "Amazonas"),
++            Map.entry("BA", "Bahia"),
++            Map.entry("CE", "Ceará"),
++            Map.entry("DF", "Distrito Federal"),
++            Map.entry("ES", "Espírito Santo"),
++            Map.entry("GO", "Goiás"),
++            Map.entry("MA", "Maranhão"),
++            Map.entry("MT", "Mato Grosso"),
++            Map.entry("MS", "Mato Grosso do Sul"),
++            Map.entry("MG", "Minas Gerais"),
++            Map.entry("PA", "Pará"),
++            Map.entry("PB", "Paraíba"),
++            Map.entry("PR", "Paraná"),
++            Map.entry("PE", "Pernambuco"),
++            Map.entry("PI", "Piauí"),
++            Map.entry("RJ", "Rio de Janeiro"),
++            Map.entry("RN", "Rio Grande do Norte"),
++            Map.entry("RS", "Rio Grande do Sul"),
++            Map.entry("RO", "Rondônia"),
++            Map.entry("RR", "Roraima"),
++            Map.entry("SC", "Santa Catarina"),
++            Map.entry("SP", "São Paulo"),
++            Map.entry("SE", "Sergipe"),
++            Map.entry("TO", "Tocantins"));
++
++    private BrazilianStates() {}
++
++    public static Optional<String> nameOf(String uf) {
++        if (uf == null) {
++            return Optional.empty();
++        }
++        return Optional.ofNullable(UF_TO_NAME.get(uf.trim().toUpperCase(Locale.ROOT)));
++    }
++}
+diff --git a/src/main/java/com/seunome/weatherbot/service/ChatService.java b/src/main/java/com/seunome/weatherbot/service/ChatService.java
+index a64f9f6..b12fa9c 100644
+--- a/src/main/java/com/seunome/weatherbot/service/ChatService.java
++++ b/src/main/java/com/seunome/weatherbot/service/ChatService.java
+@@ -1,7 +1,9 @@
+ package com.seunome.weatherbot.service;
+ 
+ import java.text.Normalizer;
++import java.util.Comparator;
+ import java.util.List;
++import java.util.Optional;
+ import java.util.Set;
+ 
+ import org.springframework.stereotype.Service;
+@@ -12,12 +14,18 @@ import com.seunome.weatherbot.dto.ChatResponseType;
+ import com.seunome.weatherbot.dto.GeocodingResult;
+ import com.seunome.weatherbot.dto.WeatherResponse;
+ import com.seunome.weatherbot.formatter.WeatherMessageFormatter;
++import com.seunome.weatherbot.mapper.BrazilianStates;
+ 
+ @Service
+ public class ChatService {
+ 
++    /** Saudações já normalizadas (sem acento, minúsculas, sem pontuação final). */
+     private static final Set<String> GREETINGS = Set.of(
+-            "oi", "ola", "olá", "bom dia", "boa tarde", "boa noite", "menu", "ajuda", "start");
++            "oi", "ola", "e ai", "bom dia", "boa tarde", "boa noite", "tudo bem",
++            "menu", "ajuda", "start", "help");
++
++    /** Uma cidade é dominante se tiver pelo menos 5x a população da segunda maior. */
++    private static final int DOMINANCE_FACTOR = 5;
+ 
+     private static final int MAX_OPTIONS = 5;
+ 
+@@ -36,10 +44,6 @@ public class ChatService {
+     public ChatResponse handle(String rawMessage) {
+         String message = rawMessage == null ? "" : rawMessage.trim();
+ 
+-        if (message.isEmpty() || GREETINGS.contains(message.toLowerCase())) {
+-            return new ChatResponse(ChatResponseType.WELCOME, WeatherMessageFormatter.WELCOME, null);
+-        }
+-
+         // "Santa Cruz, Rio Grande do Norte" -> cidade = "Santa Cruz", filtro = "Rio Grande do Norte"
+         String city = message;
+         String filter = null;
+@@ -49,6 +53,11 @@ public class ChatService {
+             filter = message.substring(comma + 1).trim();
+         }
+ 
++        // Vazio, "Oi", "Oi!" ou "Oi, tudo bem?": o trecho antes da vírgula é uma saudação.
++        if (message.isEmpty() || isGreeting(city)) {
++            return new ChatResponse(ChatResponseType.WELCOME, WeatherMessageFormatter.WELCOME, null);
++        }
++
+         List<GeocodingResult> results = geocodingClient.searchCity(city);
+ 
+         if (filter != null && !filter.isEmpty()) {
+@@ -59,38 +68,59 @@ public class ChatService {
+             return new ChatResponse(ChatResponseType.NOT_FOUND, formatter.formatNotFound(message), null);
+         }
+ 
+-        if (isAmbiguous(results)) {
+-            List<GeocodingResult> options = results.stream().limit(MAX_OPTIONS).toList();
++        Optional<GeocodingResult> chosen = pickCity(results);
++
++        if (chosen.isEmpty()) {
++            List<GeocodingResult> options = results.stream()
++                    .sorted(Comparator.<GeocodingResult>comparingLong(this::population).reversed())
++                    .limit(MAX_OPTIONS)
++                    .toList();
+             return new ChatResponse(
+                     ChatResponseType.DISAMBIGUATION,
+                     formatter.formatDisambiguation(city, options),
+                     null);
+         }
+ 
+-        WeatherResponse weather = weatherService.getWeatherByLocation(results.get(0));
++        WeatherResponse weather = weatherService.getWeatherByLocation(chosen.get());
+         return new ChatResponse(ChatResponseType.WEATHER, formatter.formatWeather(weather), weather);
+     }
+ 
+     /**
+-     * Ambígua = mais de um resultado E nenhum é claramente dominante.
+-     * Uma cidade é dominante se tem pelo menos 5x a população da segunda colocada
+-     * (ex.: "Lisboa", "São Paulo", "Paris" não precisam de desambiguação).
++     * Escolhe a cidade sem pedir desambiguação quando possível:
++     * - só um resultado: usa ele;
++     * - a cidade de MAIOR população (não necessariamente a primeira da lista) é dominante
++     *   se tiver pelo menos 5x a população da segunda maior (ex.: "Lisboa", "Paris");
++     * - caso contrário (ou sem dados de população): vazio, e o bot pede para o usuário escolher.
+      */
+-    private boolean isAmbiguous(List<GeocodingResult> results) {
++    private Optional<GeocodingResult> pickCity(List<GeocodingResult> results) {
+         if (results.size() == 1) {
+-            return false;
++            return Optional.of(results.get(0));
+         }
+-        long first = population(results.get(0));
+-        long second = population(results.get(1));
+-        return !(first > 0 && first >= second * 5);
++        List<GeocodingResult> byPopulation = results.stream()
++                .sorted(Comparator.<GeocodingResult>comparingLong(this::population).reversed())
++                .toList();
++        long top = population(byPopulation.get(0));
++        long second = population(byPopulation.get(1));
++        // top >= second * 5, sem multiplicação (inteiros: equivale a top / 5 >= second)
++        boolean dominant = top > 0 && top / DOMINANCE_FACTOR >= second;
++        return dominant ? Optional.of(byPopulation.get(0)) : Optional.empty();
++    }
++
++    private boolean isGreeting(String text) {
++        String n = normalize(text).replaceAll("[!?.\\s]+$", "");
++        return GREETINGS.contains(n);
+     }
+ 
+     private List<GeocodingResult> applyFilter(List<GeocodingResult> results, String filter) {
+         String f = normalize(filter);
++        // "PB" -> "paraiba" (só vale para cidades do Brasil)
++        String ufName = BrazilianStates.nameOf(filter).map(this::normalize).orElse(null);
+         return results.stream()
+                 .filter(r -> matches(r.admin1(), f)
+                         || matches(r.country(), f)
+-                        || (r.countryCode() != null && normalize(r.countryCode()).equals(f)))
++                        || (r.countryCode() != null && normalize(r.countryCode()).equals(f))
++                        || (ufName != null && "BR".equalsIgnoreCase(r.countryCode())
++                                && matches(r.admin1(), ufName)))
+                 .toList();
+     }
+ 
+diff --git a/src/main/java/com/seunome/weatherbot/service/WeatherService.java b/src/main/java/com/seunome/weatherbot/service/WeatherService.java
+index c6c0532..97d0b2d 100644
+--- a/src/main/java/com/seunome/weatherbot/service/WeatherService.java
++++ b/src/main/java/com/seunome/weatherbot/service/WeatherService.java
+@@ -127,6 +127,6 @@ public class WeatherService {
+     }
+ 
+     private static <T> T at(List<T> list, int index) {
+-        return (list != null && index < list.size()) ? list.get(index) : null;
++        return (list != null && index >= 0 && index < list.size()) ? list.get(index) : null;
+     }
+ }
+\ No newline at end of file
+diff --git a/src/test/java/com/seunome/weatherbot/dto/ChatRequestValidationTest.java b/src/test/java/com/seunome/weatherbot/dto/ChatRequestValidationTest.java
+new file mode 100644
+index 0000000..fd7f041
+--- /dev/null
++++ b/src/test/java/com/seunome/weatherbot/dto/ChatRequestValidationTest.java
+@@ -0,0 +1,38 @@
++package com.seunome.weatherbot.dto;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import jakarta.validation.Validation;
++import jakarta.validation.Validator;
++import org.junit.jupiter.api.Test;
++
++class ChatRequestValidationTest {
++
++    private final Validator validator = Validation.buildDefaultValidatorFactory().getValidator();
++
++    @Test
++    void mensagemNormalDeveSerValida() {
++        assertTrue(validator.validate(new ChatRequest("Santa Cruz, RN")).isEmpty());
++    }
++
++    @Test
++    void mensagemNulaOuVaziaDeveSerValidaPoisRetornaBoasVindas() {
++        assertTrue(validator.validate(new ChatRequest(null)).isEmpty());
++        assertTrue(validator.validate(new ChatRequest("")).isEmpty());
++    }
++
++    @Test
++    void mensagemComMais_de_150_caracteresDeveSerInvalida() {
++        var violations = validator.validate(new ChatRequest("a".repeat(151)));
++
++        assertEquals(1, violations.size());
++        assertEquals("A mensagem deve ter no máximo 150 caracteres.",
++                violations.iterator().next().getMessage());
++    }
++
++    @Test
++    void mensagemComExatamente_150_caracteresDeveSerValida() {
++        assertTrue(validator.validate(new ChatRequest("a".repeat(150))).isEmpty());
++    }
++}
+diff --git a/src/test/java/com/seunome/weatherbot/mapper/BrazilianStatesTest.java b/src/test/java/com/seunome/weatherbot/mapper/BrazilianStatesTest.java
+new file mode 100644
+index 0000000..c1322e3
+--- /dev/null
++++ b/src/test/java/com/seunome/weatherbot/mapper/BrazilianStatesTest.java
+@@ -0,0 +1,30 @@
++package com.seunome.weatherbot.mapper;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.params.ParameterizedTest;
++import org.junit.jupiter.params.provider.CsvSource;
++
++class BrazilianStatesTest {
++
++    @ParameterizedTest
++    @CsvSource({
++            "SP, São Paulo",
++            "pb, Paraíba",
++            "RN, Rio Grande do Norte",
++            "DF, Distrito Federal",
++            "' TO ', Tocantins"
++    })
++    void deveConverterSiglaEmNome(String uf, String esperado) {
++        assertEquals(esperado, BrazilianStates.nameOf(uf).orElseThrow());
++    }
++
++    @Test
++    void siglaInvalidaOuNulaDeveRetornarVazio() {
++        assertTrue(BrazilianStates.nameOf("XX").isEmpty());
++        assertTrue(BrazilianStates.nameOf("São Paulo").isEmpty());
++        assertTrue(BrazilianStates.nameOf(null).isEmpty());
++    }
++}
+diff --git a/src/test/java/com/seunome/weatherbot/service/ChatServiceTest.java b/src/test/java/com/seunome/weatherbot/service/ChatServiceTest.java
+index 9590015..9eddadd 100644
+--- a/src/test/java/com/seunome/weatherbot/service/ChatServiceTest.java
++++ b/src/test/java/com/seunome/weatherbot/service/ChatServiceTest.java
+@@ -139,6 +139,68 @@ class ChatServiceTest {
+         assertEquals(ChatResponseType.NOT_FOUND, r.type());
+     }
+ 
++    @Test
++    void saudacaoComVirgulaNaoDeveConsultarCidade() {
++        ChatResponse r = chatService.handle("Oi, tudo bem?");
++
++        assertEquals(ChatResponseType.WELCOME, r.type());
++        verifyNoInteractions(geocodingClient);
++    }
++
++    @Test
++    void saudacaoComPontuacaoOuAcentoDeveRetornarBoasVindas() {
++        assertEquals(ChatResponseType.WELCOME, chatService.handle("Olá!").type());
++        assertEquals(ChatResponseType.WELCOME, chatService.handle("oi?").type());
++        verifyNoInteractions(geocodingClient);
++    }
++
++    @Test
++    void siglaDeEstadoBrasileiroDeveFiltrarCidade() {
++        GeocodingResult sp = cidade(1L, "Campinas", "São Paulo", "Brasil", "BR", 1_100_000L);
++        GeocodingResult go = cidade(2L, "Campinas", "Goiás", "Brasil", "BR", 20_000L);
++        when(geocodingClient.searchCity("Campinas")).thenReturn(List.of(go, sp));
++        when(weatherService.getWeatherByLocation(go)).thenReturn(weatherFake());
++
++        ChatResponse r = chatService.handle("Campinas, go");
++
++        assertEquals(ChatResponseType.WEATHER, r.type());
++        verify(weatherService).getWeatherByLocation(go);
++    }
++
++    @Test
++    void siglaDeEstadoNaoDeveCasarComCidadeForaDoBrasil() {
++        GeocodingResult pt = cidade(1L, "Campinas", "São Paulo", "Portugal", "PT", 1_000L);
++        when(geocodingClient.searchCity("Campinas")).thenReturn(List.of(pt));
++
++        ChatResponse r = chatService.handle("Campinas, SP");
++
++        assertEquals(ChatResponseType.NOT_FOUND, r.type());
++    }
++
++    @Test
++    void deveUsarCidadeDeMaiorPopulacaoMesmoQuandoNaoEhAPrimeiraDaLista() {
++        GeocodingResult pequena = cidade(1L, "Campinas", "Goiás", "Brasil", "BR", 20_000L);
++        GeocodingResult grande = cidade(2L, "Campinas", "São Paulo", "Brasil", "BR", 1_100_000L);
++        when(geocodingClient.searchCity("Campinas")).thenReturn(List.of(pequena, grande));
++        when(weatherService.getWeatherByLocation(grande)).thenReturn(weatherFake());
++
++        ChatResponse r = chatService.handle("Campinas");
++
++        assertEquals(ChatResponseType.WEATHER, r.type());
++        verify(weatherService).getWeatherByLocation(grande);
++    }
++
++    @Test
++    void semDadosDePopulacaoDeveGerarDesambiguacao() {
++        GeocodingResult a = cidade(1L, "Vila Nova", "A", "Brasil", "BR", null);
++        GeocodingResult b = cidade(2L, "Vila Nova", "B", "Portugal", "PT", null);
++        when(geocodingClient.searchCity("Vila Nova")).thenReturn(List.of(a, b));
++
++        ChatResponse r = chatService.handle("Vila Nova");
++
++        assertEquals(ChatResponseType.DISAMBIGUATION, r.type());
++    }
++
+     // ---------- helpers ----------
+ 
+     private GeocodingResult cidade(Long id, String nome, String estado,

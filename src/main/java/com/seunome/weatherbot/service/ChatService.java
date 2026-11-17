@@ -1,7 +1,9 @@
 package com.seunome.weatherbot.service;
 
 import java.text.Normalizer;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 
 import org.springframework.stereotype.Service;
@@ -12,12 +14,18 @@ import com.seunome.weatherbot.dto.ChatResponseType;
 import com.seunome.weatherbot.dto.GeocodingResult;
 import com.seunome.weatherbot.dto.WeatherResponse;
 import com.seunome.weatherbot.formatter.WeatherMessageFormatter;
+import com.seunome.weatherbot.mapper.BrazilianStates;
 
 @Service
 public class ChatService {
 
+    /** Saudações já normalizadas (sem acento, minúsculas, sem pontuação final). */
     private static final Set<String> GREETINGS = Set.of(
-            "oi", "ola", "olá", "bom dia", "boa tarde", "boa noite", "menu", "ajuda", "start");
+            "oi", "ola", "e ai", "bom dia", "boa tarde", "boa noite", "tudo bem",
+            "menu", "ajuda", "start", "help");
+
+    /** Uma cidade é dominante se tiver pelo menos 5x a população da segunda maior. */
+    private static final int DOMINANCE_FACTOR = 5;
 
     private static final int MAX_OPTIONS = 5;
 
@@ -36,10 +44,6 @@ public class ChatService {
     public ChatResponse handle(String rawMessage) {
         String message = rawMessage == null ? "" : rawMessage.trim();
 
-        if (message.isEmpty() || GREETINGS.contains(message.toLowerCase())) {
-            return new ChatResponse(ChatResponseType.WELCOME, WeatherMessageFormatter.WELCOME, null);
-        }
-
         // "Santa Cruz, Rio Grande do Norte" -> cidade = "Santa Cruz", filtro = "Rio Grande do Norte"
         String city = message;
         String filter = null;
@@ -47,6 +51,11 @@ public class ChatService {
         if (comma > 0) {
             city = message.substring(0, comma).trim();
             filter = message.substring(comma + 1).trim();
+        }
+
+        // Vazio, "Oi", "Oi!" ou "Oi, tudo bem?": o trecho antes da vírgula é uma saudação.
+        if (message.isEmpty() || isGreeting(city)) {
+            return new ChatResponse(ChatResponseType.WELCOME, WeatherMessageFormatter.WELCOME, null);
         }
 
         List<GeocodingResult> results = geocodingClient.searchCity(city);
@@ -59,38 +68,59 @@ public class ChatService {
             return new ChatResponse(ChatResponseType.NOT_FOUND, formatter.formatNotFound(message), null);
         }
 
-        if (isAmbiguous(results)) {
-            List<GeocodingResult> options = results.stream().limit(MAX_OPTIONS).toList();
+        Optional<GeocodingResult> chosen = pickCity(results);
+
+        if (chosen.isEmpty()) {
+            List<GeocodingResult> options = results.stream()
+                    .sorted(Comparator.<GeocodingResult>comparingLong(this::population).reversed())
+                    .limit(MAX_OPTIONS)
+                    .toList();
             return new ChatResponse(
                     ChatResponseType.DISAMBIGUATION,
                     formatter.formatDisambiguation(city, options),
                     null);
         }
 
-        WeatherResponse weather = weatherService.getWeatherByLocation(results.get(0));
+        WeatherResponse weather = weatherService.getWeatherByLocation(chosen.get());
         return new ChatResponse(ChatResponseType.WEATHER, formatter.formatWeather(weather), weather);
     }
 
     /**
-     * Ambígua = mais de um resultado E nenhum é claramente dominante.
-     * Uma cidade é dominante se tem pelo menos 5x a população da segunda colocada
-     * (ex.: "Lisboa", "São Paulo", "Paris" não precisam de desambiguação).
+     * Escolhe a cidade sem pedir desambiguação quando possível:
+     * - só um resultado: usa ele;
+     * - a cidade de MAIOR população (não necessariamente a primeira da lista) é dominante
+     *   se tiver pelo menos 5x a população da segunda maior (ex.: "Lisboa", "Paris");
+     * - caso contrário (ou sem dados de população): vazio, e o bot pede para o usuário escolher.
      */
-    private boolean isAmbiguous(List<GeocodingResult> results) {
+    private Optional<GeocodingResult> pickCity(List<GeocodingResult> results) {
         if (results.size() == 1) {
-            return false;
+            return Optional.of(results.get(0));
         }
-        long first = population(results.get(0));
-        long second = population(results.get(1));
-        return !(first > 0 && first >= second * 5);
+        List<GeocodingResult> byPopulation = results.stream()
+                .sorted(Comparator.<GeocodingResult>comparingLong(this::population).reversed())
+                .toList();
+        long top = population(byPopulation.get(0));
+        long second = population(byPopulation.get(1));
+        // top >= second * 5, sem multiplicação (inteiros: equivale a top / 5 >= second)
+        boolean dominant = top > 0 && top / DOMINANCE_FACTOR >= second;
+        return dominant ? Optional.of(byPopulation.get(0)) : Optional.empty();
+    }
+
+    private boolean isGreeting(String text) {
+        String n = normalize(text).replaceAll("[!?.\\s]+$", "");
+        return GREETINGS.contains(n);
     }
 
     private List<GeocodingResult> applyFilter(List<GeocodingResult> results, String filter) {
         String f = normalize(filter);
+        // "PB" -> "paraiba" (só vale para cidades do Brasil)
+        String ufName = BrazilianStates.nameOf(filter).map(this::normalize).orElse(null);
         return results.stream()
                 .filter(r -> matches(r.admin1(), f)
                         || matches(r.country(), f)
-                        || (r.countryCode() != null && normalize(r.countryCode()).equals(f)))
+                        || (r.countryCode() != null && normalize(r.countryCode()).equals(f))
+                        || (ufName != null && "BR".equalsIgnoreCase(r.countryCode())
+                                && matches(r.admin1(), ufName)))
                 .toList();
     }
 

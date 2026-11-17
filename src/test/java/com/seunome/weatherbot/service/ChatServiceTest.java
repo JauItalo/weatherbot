@@ -139,6 +139,68 @@ class ChatServiceTest {
         assertEquals(ChatResponseType.NOT_FOUND, r.type());
     }
 
+    @Test
+    void saudacaoComVirgulaNaoDeveConsultarCidade() {
+        ChatResponse r = chatService.handle("Oi, tudo bem?");
+
+        assertEquals(ChatResponseType.WELCOME, r.type());
+        verifyNoInteractions(geocodingClient);
+    }
+
+    @Test
+    void saudacaoComPontuacaoOuAcentoDeveRetornarBoasVindas() {
+        assertEquals(ChatResponseType.WELCOME, chatService.handle("Olá!").type());
+        assertEquals(ChatResponseType.WELCOME, chatService.handle("oi?").type());
+        verifyNoInteractions(geocodingClient);
+    }
+
+    @Test
+    void siglaDeEstadoBrasileiroDeveFiltrarCidade() {
+        GeocodingResult sp = cidade(1L, "Campinas", "São Paulo", "Brasil", "BR", 1_100_000L);
+        GeocodingResult go = cidade(2L, "Campinas", "Goiás", "Brasil", "BR", 20_000L);
+        when(geocodingClient.searchCity("Campinas")).thenReturn(List.of(go, sp));
+        when(weatherService.getWeatherByLocation(go)).thenReturn(weatherFake());
+
+        ChatResponse r = chatService.handle("Campinas, go");
+
+        assertEquals(ChatResponseType.WEATHER, r.type());
+        verify(weatherService).getWeatherByLocation(go);
+    }
+
+    @Test
+    void siglaDeEstadoNaoDeveCasarComCidadeForaDoBrasil() {
+        GeocodingResult pt = cidade(1L, "Campinas", "São Paulo", "Portugal", "PT", 1_000L);
+        when(geocodingClient.searchCity("Campinas")).thenReturn(List.of(pt));
+
+        ChatResponse r = chatService.handle("Campinas, SP");
+
+        assertEquals(ChatResponseType.NOT_FOUND, r.type());
+    }
+
+    @Test
+    void deveUsarCidadeDeMaiorPopulacaoMesmoQuandoNaoEhAPrimeiraDaLista() {
+        GeocodingResult pequena = cidade(1L, "Campinas", "Goiás", "Brasil", "BR", 20_000L);
+        GeocodingResult grande = cidade(2L, "Campinas", "São Paulo", "Brasil", "BR", 1_100_000L);
+        when(geocodingClient.searchCity("Campinas")).thenReturn(List.of(pequena, grande));
+        when(weatherService.getWeatherByLocation(grande)).thenReturn(weatherFake());
+
+        ChatResponse r = chatService.handle("Campinas");
+
+        assertEquals(ChatResponseType.WEATHER, r.type());
+        verify(weatherService).getWeatherByLocation(grande);
+    }
+
+    @Test
+    void semDadosDePopulacaoDeveGerarDesambiguacao() {
+        GeocodingResult a = cidade(1L, "Vila Nova", "A", "Brasil", "BR", null);
+        GeocodingResult b = cidade(2L, "Vila Nova", "B", "Portugal", "PT", null);
+        when(geocodingClient.searchCity("Vila Nova")).thenReturn(List.of(a, b));
+
+        ChatResponse r = chatService.handle("Vila Nova");
+
+        assertEquals(ChatResponseType.DISAMBIGUATION, r.type());
+    }
+
     // ---------- helpers ----------
 
     private GeocodingResult cidade(Long id, String nome, String estado,

@@ -6,6 +6,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -47,7 +49,25 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ErrorResponse> handleValidation(
             Exception ex, HttpServletRequest request) {
         return build(HttpStatus.BAD_REQUEST,
-                "Informe o nome de uma cidade (entre 2 e 100 caracteres).", request);
+                "Parâmetro inválido. Informe o nome de uma cidade com 2 a 100 caracteres.", request);
+    }
+
+    /** Falha de @Valid no corpo da requisição (ex.: ChatRequest). Usa a mensagem do próprio campo. */
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity<ErrorResponse> handleBodyValidation(
+            MethodArgumentNotValidException ex, HttpServletRequest request) {
+        String message = ex.getBindingResult().getFieldErrors().stream()
+                .map(e -> e.getDefaultMessage())
+                .findFirst()
+                .orElse("Requisição inválida.");
+        return build(HttpStatus.BAD_REQUEST, message, request);
+    }
+
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<ErrorResponse> handleUnreadableBody(
+            HttpMessageNotReadableException ex, HttpServletRequest request) {
+        return build(HttpStatus.BAD_REQUEST,
+                "Corpo da requisição inválido. Envie um JSON no formato {\"message\": \"...\"}.", request);
     }
 
     @ExceptionHandler(Exception.class)
